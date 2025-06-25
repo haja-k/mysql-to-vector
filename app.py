@@ -1,57 +1,86 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
+from pydantic import BaseModel
+import aiomysql
 from typing import List, Dict, Optional
-import aiomysql, os
+import os
+from contextlib import asynccontextmanager
 
-load_dotenv() 
+# Load environment variables
+load_dotenv()
 
-app = FastAPI()
+# Application Lifespan Management
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Create connection pool
+    app.state.pool = await aiomysql.create_pool(
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", 3306)),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        db=os.getenv("DB_NAME"),
+        minsize=1,
+        maxsize=10
+    )
+    yield
+    # Shutdown: Close connection pool
+    app.state.pool.close()
+    await app.state.pool.wait_closed()
 
-# MySQL configuration
-DB_CONFIG = {
-    'host': os.getenv("DB_HOST"),
-    'port': int(os.getenv("DB_PORT", 3306)),
-    'user': os.getenv("DB_USER"),
-    'password': os.getenv("DB_PASSWORD"),
-    'db': os.getenv("DB_NAME"),
-}
+app = FastAPI(
+    title="Genie Genie API",
+    lifespan=lifespan,
+    debug=os.getenv("APP_DEBUG", "False").lower() == "true"
+)
 
-# Simple API key for security (replace with a strong key, e.g., `openssl rand -base64 32`)
-API_KEY = os.getenv("APP_SECRET_KEY")
+# Define proper response model with Optional fields
+class DocumentResponse(BaseModel):
+    question: str
+    answer: Optional[str] = ""
+    link: Optional[str] = ""
+    date: Optional[str] = ""
 
-async def check_api_key(authorization: Optional[str] = Header(None)):
-    if not authorization or authorization != f'Bearer {API_KEY}':
-        raise HTTPException(status_code=401, detail='Invalid or missing API key')
-
-@app.get('/documents', response_model=List[Dict[str, str]])
-async def get_documents(category: Optional[str] = None, authorization: Optional[str] = Header(None)):
-    await check_api_key(authorization)
-
+@app.get('/documents', response_model=List[DocumentResponse])
+async def get_documents():
     try:
-        # Create MySQL connection pool
-        pool = await aiomysql.create_pool(**DB_CONFIG)
-        async with pool.acquire() as conn:
+        async with app.state.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
-                # Query table (adjust column names as needed)
-                query = 'SELECT id, genie_question, genie_answer, genie_questiondate, genie_sourcelink FROM tbl_genie_genie'
-                params = []
-                if category:
-                    query += ' WHERE category = %s'
-                    params.append(category)
-                await cursor.execute(query, params)
+                await cursor.execute('''
+                    SELECT 
+                        genie_question, 
+                        genie_answer, 
+                        genie_questiondate, 
+                        genie_sourcelink 
+                    FROM tbl_genie_genie
+                ''')
                 rows = await cursor.fetchall()
-
-                # Format as documents for Dify
-                documents = [
-                    {
-                        'question': row['genie_question'],
-                        'answer': row['genie_answer']
-                    } for row in rows
-                ]
-
-        pool.close()
-        await pool.wait_closed()
-        return documents
-
+                
+                documents = []
+                for row in rows:
+                    documents.append({
+                        'question': row.get('genie_question') or "",
+                        'answer': row.get('genie_answer') or "",
+                        'link': row.get('genie_sourcelink') or "",
+                        'date': str(row['genie_questiondate']) if row.get('genie_questiondate') else ""
+                    })
+                return documents
+                
+    except aiomysql.Error as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable"
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Database error: {str(e)}')
+        raise HTTPException(
+            status_code=500,
+            detail=f"Server error: {str(e)}"
+        )
+
+@app.get("/healthcheck")
+async def healthcheck():
+    """Endpoint to verify service is running"""
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=5000)

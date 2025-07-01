@@ -93,7 +93,11 @@ def get_embeddings(text: str) -> List[float]:
 # Helper function to update embeddings in pgvector database
 def update_embeddings_in_pgv(pgv_conn, question_id: int, question: str, answer: str):
     question_embedding = get_embeddings(question)  # Get raw list of floats
-    answer_embedding = get_embeddings(answer) if answer else []  # Get raw list of floats
+    answer_embedding = get_embeddings(answer) if answer else []  # Get raw list of floats, default to empty if no answer
+    
+    # Ensure empty embeddings are handled as valid PostgreSQL vectors
+    question_embedding = question_embedding if question_embedding else []
+    answer_embedding = answer_embedding if answer_embedding else []
     
     with pgv_conn.cursor() as cursor:
         cursor.execute(
@@ -166,7 +170,6 @@ async def sync_embeddings():
                     SELECT id, genie_question, genie_answer, genie_questiondate, genie_sourcelink
                     FROM tbl_genie_genie
                     WHERE id > %s
-                    LIMIT 100
                 """, (last_migrated_id,))
                 rows = await mysql_cursor.fetchall()
 

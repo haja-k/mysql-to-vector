@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
         port=int(os.getenv("DB_PORT")),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
-        db=os.getenv("DB_NAME", "db_ses"),  # Default to db_ses based on error context
+        db=os.getenv("DB_NAME", "db_ses"),
         minsize=1,
         maxsize=10
     )
@@ -62,8 +62,8 @@ class DocumentResponse(BaseModel):
     link: Optional[str] = ""
     date: Optional[str] = ""
 
-# Helper function to get embeddings
-def get_embeddings(text: str) -> List[float]:
+# Helper function to get embeddings and ensure correct dimensionality
+def get_embeddings(text: str, expected_dim: int = 4096) -> List[float]:
     host = os.getenv("EMBEDDING_MODEL_HOST")
     api_key = os.getenv("EMBEDDING_API_KEY")
     model_name = os.getenv("EMBEDDING_MODEL_NAME")
@@ -85,19 +85,22 @@ def get_embeddings(text: str) -> List[float]:
         response.raise_for_status()
         result = response.json()
         logger.info(f"Embedding response: {result}")
-        return result.get("data", [{}])[0].get("embedding", [])
+        embedding = result.get("data", [{}])[0].get("embedding", [])
+        if not embedding or len(embedding) != expected_dim:
+            logger.warning(f"Embedding has wrong dimensions (got {len(embedding)}, expected {expected_dim}). Padding with zeros.")
+            embedding = np.pad(embedding, (0, max(0, expected_dim - len(embedding))), mode='constant').tolist()
+        return embedding
     except requests.exceptions.RequestException as e:
         logger.error(f"Embedding service error: {str(e)}, Response: {e.response.text if e.response else 'No response'}")
-        return []
+        # Return zero vector of expected dimension on failure
+        return [0.0] * expected_dim
 
 # Helper function to update embeddings in pgvector database
 def update_embeddings_in_pgv(pgv_conn, question_id: int, question: str, answer: str):
-    question_embedding = get_embeddings(question)  # Get raw list of floats
-    answer_embedding = get_embeddings(answer) if answer else []  # Get raw list of floats, default to empty if no answer
+    question_embedding = get_embeddings(question)
+    answer_embedding = get_embeddings(answer) if answer else get_embeddings("")
     
-    # Ensure empty embeddings are handled as valid PostgreSQL vectors
-    question_embedding = question_embedding if question_embedding else []
-    answer_embedding = answer_embedding if answer_embedding else []
+    logger.debug(f"Updating embeddings - question_id: {question_id}, question_embedding length: {len(question_embedding)}, answer_embedding length: {len(answer_embedding)}")
     
     with pgv_conn.cursor() as cursor:
         cursor.execute(

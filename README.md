@@ -26,4 +26,4 @@
 MySQL > Postgres PGVector > Dify Integration
 
 ### Current Problem To Fix:
-- Error when passing empty answer.
+- None, but in the process of figuring out how to use this with Dify as knowledge base

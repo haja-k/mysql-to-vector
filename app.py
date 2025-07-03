@@ -62,6 +62,22 @@ class DocumentResponse(BaseModel):
     link: Optional[str] = ""
     date: Optional[str] = ""
 
+class SearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 5
+    similarity_threshold: Optional[float] = 0.7
+
+class SearchResult(BaseModel):
+    question: str
+    answer: str
+    link: str
+    date: str
+    similarity_score: float
+
+class SearchResponse(BaseModel):
+    results: List[SearchResult]
+    total_results: int
+
 # Helper function to get embeddings and ensure correct dimensionality
 def get_embeddings(text: str, expected_dim: int = 4096) -> List[float]:
     host = os.getenv("EMBEDDING_MODEL_HOST")
@@ -147,6 +163,167 @@ async def get_documents():
         raise HTTPException(
             status_code=500,
             detail=f"Server error: {str(e)}"
+        )
+
+@app.post('/search')
+async def search_knowledge_base(request: SearchRequest):
+    """
+    Search knowledge base using vector similarity.
+    This endpoint is designed to be used with Dify workflow API nodes.
+    """
+    try:
+        # Get embedding for the query
+        query_embedding = get_embeddings(request.query)
+        
+        # Perform similarity search in pgvector
+        pgv_conn = app.state.pgv_pool
+        
+        with pgv_conn.cursor() as cursor:
+            # Use cosine similarity for search
+            cursor.execute(
+                """
+                SELECT 
+                    question, 
+                    answer, 
+                    link, 
+                    date,
+                    1 - (question_embedding <=> %s::vector) as similarity_score
+                FROM genie_documents
+                WHERE question_embedding IS NOT NULL
+                    AND 1 - (question_embedding <=> %s::vector) > %s
+                ORDER BY similarity_score DESC
+                LIMIT %s
+                """,
+                (query_embedding, query_embedding, request.similarity_threshold, request.limit)
+            )
+            
+            rows = cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append(SearchResult(
+                    question=row[0] or "",
+                    answer=row[1] or "",
+                    link=row[2] or "",
+                    date=str(row[3]) if row[3] else "",
+                    similarity_score=float(row[4])
+                ))
+            
+            return SearchResponse(
+                results=results,
+                total_results=len(results)
+            )
+            
+    except psycopg2.Error as e:
+        logger.error(f"PostgreSQL error during search: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database search error: {str(e)}"
+        )
+    except requests.RequestException as e:
+        logger.error(f"Embedding service error during search: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Search error: {str(e)}"
+        )
+
+@app.post('/search-simple')
+async def search_knowledge_base_simple(request: SearchRequest):
+    """
+    Simplified search endpoint that returns a more Dify-friendly format.
+    Returns concatenated results as a single text block.
+    """
+    try:
+        # Get embedding for the query
+        query_embedding = get_embeddings(request.query)
+        
+        # Perform similarity search in pgvector
+        pgv_conn = app.state.pgv_pool
+        
+        with pgv_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 
+                    question, 
+                    answer, 
+                    link, 
+                    date,
+                    1 - (question_embedding <=> %s::vector) as similarity_score
+                FROM genie_documents
+                WHERE question_embedding IS NOT NULL
+                    AND 1 - (question_embedding <=> %s::vector) > %s
+                ORDER BY similarity_score DESC
+                LIMIT %s
+                """,
+                (query_embedding, query_embedding, request.similarity_threshold, request.limit)
+            )
+            
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return {
+                    "context": "No relevant information found in the knowledge base.",
+                    "sources": [],
+                    "total_results": 0
+                }
+            
+            # Format results as context text
+            context_parts = []
+            sources = []
+            
+            for i, row in enumerate(rows, 1):
+                question = row[0] or ""
+                answer = row[1] or ""
+                link = row[2] or ""
+                date = str(row[3]) if row[3] else ""
+                similarity_score = float(row[4])
+                
+                context_parts.append(f"Result {i}:")
+                context_parts.append(f"Question: {question}")
+                context_parts.append(f"Answer: {answer}")
+                if link:
+                    context_parts.append(f"Source: {link}")
+                if date:
+                    context_parts.append(f"Date: {date}")
+                context_parts.append(f"Relevance: {similarity_score:.3f}")
+                context_parts.append("")  # Empty line for separation
+                
+                sources.append({
+                    "question": question,
+                    "link": link,
+                    "date": date,
+                    "similarity_score": similarity_score
+                })
+            
+            return {
+                "context": "\n".join(context_parts),
+                "sources": sources,
+                "total_results": len(rows)
+            }
+            
+    except psycopg2.Error as e:
+        logger.error(f"PostgreSQL error during search: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database search error: {str(e)}"
+        )
+    except requests.RequestException as e:
+        logger.error(f"Embedding service error during search: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Search error: {str(e)}"
         )
 
 @app.post('/documents/sync-embeddings')

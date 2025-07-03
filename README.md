@@ -1,4 +1,4 @@
-## Vectorizing MySQL Data For LLM
+## Vectorizing MySQL Data For LLM (API Based)
 
 ### Getting Started
 - Create environment file named .env and update the variables accordingly as shown in .env.example file

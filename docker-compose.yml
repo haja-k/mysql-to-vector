@@ -1,0 +1,53 @@
+version: '3.8'
+services:
+  pvra-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pvra-api
+    ports:
+      - "5000:5000"
+    environment:
+      # Database Configuration
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      
+      # PostgreSQL Configuration
+      - PG_HOST=${PG_HOST}
+      - PG_PORT=${PG_PORT}
+      - PG_USER=${PG_USER}
+      - PG_PASSWORD=${PG_PASSWORD}
+      - PGVECTOR_DB_NAME=${PGVECTOR_DB_NAME}
+      - PG_DB_NAME=${PG_DB_NAME}
+      
+      # Embedding Service Configuration
+      - EMBEDDING_MODEL_HOST=${EMBEDDING_MODEL_HOST}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
+      
+      # Application Configuration
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_SECRET_KEY=${APP_SECRET_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./:/app:ro  # Mount entire project as read-only
+      - app_cache:/app/.cache  # Cache directory for dependencies
+    networks:
+      - pvra-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  pvra-network:
+    driver: bridge
+
+volumes:
+  app_cache:
